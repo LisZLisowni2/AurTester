@@ -65,6 +65,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         .await
         .unwrap();
 
+    println!("[+] Container started.");
+
+    run_command_in_container(&docker, &id, vec!["echo", "test"]).await?;
+
     docker
         .remove_container(
             &id,
@@ -76,39 +80,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         )
         .await?;
 
+    println!("[+] Container removed.");
     Ok(())
 }
 
-// /// Execute a command inside a running container and stream its output.
-// async fn run_command_in_container(
-//     docker: &Docker,
-//     container_id: &str,
-//     cmd: Vec<&str>,
-//     user: &str,
-// ) -> Result<(), Box<dyn std::error::Error>> {
-//     // bollard 0.20+ CreateExecOptions lives in bollard::exec (not bollard::container)
-//     let exec_config = CreateExecOptions {
-//         attach_stdout: Some(true),
-//         attach_stderr: Some(true),
-//         user: Some(user),
-//         cmd: Some(cmd),
-//         ..Default::default()
-//     };
-//
-//     let exec = docker.create_exec(container_id, exec_config).await?;
-//
-//     // start_exec now returns StartExecResults which is an enum over Attached / Detached
-//     if let StartExecResults::Attached { mut output, .. } =
-//         docker.start_exec(&exec.id, None).await?
-//     {
-//         while let Some(msg) = output.next().await {
-//             match msg? {
-//                 LogOutput::StdOut { message } => print!("{}", String::from_utf8_lossy(&message)),
-//                 LogOutput::StdErr { message } => eprint!("{}", String::from_utf8_lossy(&message)),
-//                 _ => {}
-//             }
-//         }
-//     }
-//
-//     Ok(())
-// }
+/// Execute a command inside a running container and stream its output.
+async fn run_command_in_container(
+    docker: &Docker,
+    container_id: &str,
+    cmd: Vec<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let exec_config = CreateExecOptions {
+        attach_stdout: Some(true),
+        attach_stderr: Some(true),
+        cmd: Some(cmd),
+        ..Default::default()
+    };
+
+    let exec = docker.create_exec(container_id, exec_config).await?;
+
+    // start_exec now returns StartExecResults which is an enum over Attached / Detached
+    if let StartExecResults::Attached { mut output, .. } =
+        docker.start_exec(&exec.id, None).await?
+    {
+        while let Some(msg) = output.next().await {
+            match msg? {
+                LogOutput::StdOut { message } => print!("{}", String::from_utf8_lossy(&message)),
+                LogOutput::StdErr { message } => eprint!("{}", String::from_utf8_lossy(&message)),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(())
+}
