@@ -37,7 +37,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error> + 'static> {
     };
 
     let id = docker
-        .create_container()
+        .create_container(
+            None::<bollard::query_parameters::CreateContainerOptions>,
+            archlinux_config
+        )
+        .await
+        .unwrap()
+        .id;
+
+    println!("[+] Container created.");
+
+
 }
 
 /// Execute a command inside a running container and stream its output.
