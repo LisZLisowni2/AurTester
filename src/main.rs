@@ -1,6 +1,9 @@
+pub mod sniffer;
+
 use std::collections::HashMap;
 use bollard::models::ContainerCreateBody;
 use bollard::Docker;
+use pcap::Capture;
 
 use futures_util::{StreamExt, TryStreamExt};
 use bollard::container::LogOutput;
@@ -57,7 +60,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     println!("[+] Container started.");
 
     run_command_in_container(&docker, &id, vec!["pacman", "-Syu", "--noconfirm"]).await?;
-    run_command_in_container(&docker, &id, vec!["pacman", "-S", ""]).await?;
+    run_command_in_container(&docker, &id, vec!["pacman", "-S", "--noconfirm", "git", "base-devel"]).await?;
+
+    let inspect = docker.inspect_container(&id, None).await.unwrap();
+    let container_ip = inspect
+        .network_settings
+        .and_then(|ns| ns.networks)
+        .and_then(|net| net.get("bridge").cloned())
+        .and_then(|bridge| bridge.ip_address)
+        .unwrap_or_else(|| "".to_string());
+
+    if container_ip.is_empty() {
+        panic!("[-] Container ip address is empty.");
+    }
+    println!("[+] Container ip address: {}", container_ip);
+
+    let ip_clone = container_ip.clone();
+    let sniffer_handler = tokio::task::spawn_blocking(move || {
+        if let Err(e) = crate::sniffer::run_sniffer(&container_ip) {
+            eprintln!("[-] Sniffer error: {}", e);
+        }
+    });
+    
+    println!("[+] Sniffer started.");
 
     docker
         .remove_container(

@@ -7,3 +7,5 @@ edition = "2024"
 tokio = { version = "1.52.3", features = ["full"] }
 bollard = "*"
 futures-util = "0.3.32"
+pcap = "2.4.0"
+etherparse = "0.20.1"
