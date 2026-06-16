@@ -1,19 +1,24 @@
 pub mod sniffer;
 
-use std::collections::HashMap;
 use bollard::models::ContainerCreateBody;
 use bollard::Docker;
-use pcap::Capture;
-
 use futures_util::{StreamExt, TryStreamExt};
 use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecResults};
+use is_root::is_root;
 
 const IMAGE: &str = "archlinux:latest";
+const PACKAGE: &str = "yay";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
-    let docker = Docker::connect_with_local_defaults().unwrap();
+    if !is_root() {
+        eprintln!("[!] ERROR: You have no permission to operate!");
+        eprintln!("    Use command with `sudo`");
+        std::process::exit(1);
+    }
+
+    let docker = Docker::connect_with_local_defaults()?;
     println!("[-] Connected with Docker.");
 
     docker.create_image(
@@ -26,8 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         None,
     )
         .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
+        .await?;
 
     println!("[+] Image created.");
 
@@ -44,8 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             None::<bollard::query_parameters::CreateContainerOptions>,
             archlinux_config
         )
-        .await
-        .unwrap()
+        .await?
         .id;
 
     println!("[+] Container created.");
@@ -54,18 +57,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         &id,
         None::<bollard::query_parameters::StartContainerOptions>,
     )
-        .await
-        .unwrap();
+        .await?;
 
     println!("[+] Container started.");
+    let url = format!("https://aur.archlinux.org/{}.git", PACKAGE);
+    let path = format!("/home/builder/{}", PACKAGE);
 
     run_command_in_container(&docker, &id, "root", "/", vec!["pacman", "-Syu", "--noconfirm"]).await?;
     run_command_in_container(&docker, &id, "root", "/",vec!["pacman", "-S", "--noconfirm", "git", "base-devel"]).await?;
     run_command_in_container(&docker, &id, "root", "/", vec!["useradd", "-mG", "wheel", "builder"]).await?;
     run_command_in_container(&docker, &id, "root", "/",vec!["echo \"builder ALL=(ALL:ALL) NOPASSWD: ALL\" >> /etc/sudoers"]).await?;
-    run_command_in_container(&docker, &id, "builder", "/",vec!["git", "clone", "https://aur.archlinux.org/yay.git", "/home/builder/yay"]).await?;
+    run_command_in_container(&docker, &id, "builder", "/",vec!["git", "clone", &url, &path]).await?;
 
-    let inspect = docker.inspect_container(&id, None).await.unwrap();
+    let inspect = docker.inspect_container(&id, None).await?;
     let container_ip = inspect
         .network_settings
         .and_then(|ns| ns.networks)
@@ -78,15 +82,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     }
     println!("[+] Container ip address: {}", container_ip);
 
-    let ip_clone = container_ip.clone();
     let sniffer_handler = tokio::task::spawn_blocking(move || {
-        if let Err(e) = crate::sniffer::run_sniffer(&container_ip) {
+        if let Err(e) = sniffer::run_sniffer(&container_ip) {
             eprintln!("[-] Sniffer error: {}", e);
         }
     });
 
     println!("[+] Sniffer started.");
-    run_command_in_container(&docker, &id, "builder", "/home/builder/yay/",vec!["makepkg", "-isS"]).await?;
+    run_command_in_container(&docker, &id, "builder", &path,vec!["makepkg", "-isS"]).await?;
 
     docker
         .remove_container(
