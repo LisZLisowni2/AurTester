@@ -25,6 +25,9 @@ pub struct Cli {
     // /// Agresive mode: Instant destroy of container after unknown IP
     // #[arg(short, long, default_value_t = false)]
     // kill_on_alert: bool,
+
+    #[clap(short, long, default_value_t = false)]
+    quiet_network_allerts: bool,
 }
 
 #[tokio::main]
@@ -144,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
     let (kill_tx, mut kill_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let sniffer_handler = tokio::task::spawn_blocking(move || {
-        if let Err(e) = sniffer::run_sniffer(&container_ip, &cli.interface, allowed_domains, kill_tx) {
+        if let Err(e) = sniffer::run_sniffer(&container_ip, &cli.interface, allowed_domains, kill_tx, &cli.quiet_network_allerts) {
             eprintln!("[-] Sniffer error: {}", e);
         }
     });

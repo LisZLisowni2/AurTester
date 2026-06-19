@@ -7,7 +7,7 @@ struct DnsCache {
     map: HashMap<Ipv4Addr, String>,
 }
 
-pub fn run_sniffer(container_ip: &str, device_name: &str, allowed_domains: HashSet<String>, kill_tx: tokio::sync::mpsc::Sender<()>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_sniffer(container_ip: &str, device_name: &str, allowed_domains: HashSet<String>, kill_tx: tokio::sync::mpsc::Sender<()>, quiet: &bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut cache = DnsCache { map: HashMap::new() };
 
     if let Ok(aur_ip) = "209.126.35.78".parse::<Ipv4Addr>() {
@@ -17,8 +17,8 @@ pub fn run_sniffer(container_ip: &str, device_name: &str, allowed_domains: HashS
     if let Ok(arch_ip) = "95.217.163.50".parse::<Ipv4Addr>() {
         cache.map.insert(arch_ip, "archlinux.org".to_string());
     }
-
-    println!("[-] Sniffer: Connecting to '{}'...", device_name);
+    
+    if !quiet { println!("[-] Sniffer: Connecting to '{}'...", device_name); }
 
     let mut cap = Capture::from_device(device_name)?
         .promisc(true)
@@ -28,7 +28,7 @@ pub fn run_sniffer(container_ip: &str, device_name: &str, allowed_domains: HashS
 
     let bpf_filter = format!("host {}", container_ip);
     cap.filter(&bpf_filter, true)?;
-    println!("[+] Sniffer: Activated BPF filter: '{}'", bpf_filter);
+    if !quiet { println!("[+] Sniffer: Activated BPF filter: '{}'", bpf_filter); }
 
     while let Ok(packet) = cap.next_packet() {
         if let Ok(value) = PacketHeaders::from_ethernet_slice(packet.data) {
@@ -50,7 +50,7 @@ pub fn run_sniffer(container_ip: &str, device_name: &str, allowed_domains: HashS
                                             let domain_name = answer.name.to_string();
 
                                             cache.map.insert(resolved_ip, domain_name.clone());
-                                            println!("[+] DNS-Resolver: Resolved DNS name and added to cache: '{}'", domain_name);
+                                            if !quiet { println!("[+] DNS-Resolver: Resolved DNS name and added to cache: '{}'", domain_name) };
                                         }
                                     }
                                 }
@@ -64,10 +64,10 @@ pub fn run_sniffer(container_ip: &str, device_name: &str, allowed_domains: HashS
                                     .map(|d| d.to_string())
                                     .unwrap_or("UNKNOWN DOMAIN".to_string());
 
-                                println!(
+                                if !quiet { println!(
                                     "[NETWORK ALERT] Container connects with: {} ({}:{})",
                                     domain, dest_ip, dest_port
-                                );
+                                ); }
 
                                 let is_allowed = allowed_domains.iter().any(|allowed| {
                                     domain == *allowed || domain.ends_with(&format!(".{}", allowed))
