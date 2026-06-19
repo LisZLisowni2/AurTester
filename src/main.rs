@@ -1,5 +1,8 @@
-pub mod sniffer;
+mod sniffer;
+mod aur_api;
+mod pkgbuild;
 
+use std::process::Command;
 use bollard::models::ContainerCreateBody;
 use bollard::Docker;
 use futures_util::{StreamExt, TryStreamExt};
@@ -7,6 +10,7 @@ use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecResults};
 use is_root::is_root;
 use clap::Parser;
+use crate::pkgbuild::extract_allowed_domains;
 
 #[derive(Debug, Parser)]
 #[command(author = "LisZLisowni", version = "0.1.0", about = "A shelter for AUR packages", long_about = None)]
@@ -36,6 +40,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         eprintln!("[!] ERROR: You have no permission to operate!");
         eprintln!("    Use command with `sudo`");
         std::process::exit(1);
+    }
+
+    match Command::new("git").arg("--version").spawn() {
+        Ok(mut child) => {
+            let _ = child.kill();
+        }
+        Err(_) => {
+            eprintln!("[!] ERROR: Git not found.");
+            std::process::exit(1);
+        }
+    }
+
+    println!("[-] Connecting with AUR RPC API for package {}", cli.package);
+    let git_url = match aur_api::get_aur_git_url(&cli.package).await {
+        Ok(url) => url,
+        Err(e) => {
+            eprintln!("[!] Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let tmp_dir = format!("/tmp/aur_build_{}", cli.package);
+    println!("[-] Creating temporary directory at {}", tmp_dir);
+
+    Command::new("git")
+        .args(&["clone", &git_url, &tmp_dir])
+        .output()?;
+
+    let path = format!("{}/PKGBUILD", tmp_dir);
+    let allowed_domains = extract_allowed_domains(&path)?;
+
+    println!("[+] Generating whitelist for domains");
+    for domain in &allowed_domains {
+        println!("  -> Allowed: {}", domain);
     }
 
     const IMAGE: &str = "archlinux:latest";
@@ -103,15 +141,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         panic!("[-] Container ip address is empty.");
     }
     println!("[+] Container ip address: {}", container_ip);
+    let (kill_tx, mut kill_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     let sniffer_handler = tokio::task::spawn_blocking(move || {
-        if let Err(e) = sniffer::run_sniffer(&container_ip, &cli.interface) {
+        if let Err(e) = sniffer::run_sniffer(&container_ip, &cli.interface, allowed_domains, kill_tx) {
             eprintln!("[-] Sniffer error: {}", e);
         }
     });
 
     println!("[+] Sniffer started.");
-    run_command_in_container(&docker, &id, "builder", &path,vec!["makepkg", "-isS"]).await?;
+
+    tokio::select! {
+        _ = kill_rx.recv() => {
+            println!("[!!!] Kill container order received.");
+
+            docker
+                .remove_container(
+                    &id,
+                    Some(
+                        bollard::query_parameters::RemoveContainerOptionsBuilder::default()
+                            .force(true)
+                            .build(),
+                    ),
+                )
+                .await?;
+
+            std::process::exit(1);
+        }
+
+        build_result = run_command_in_container(&docker, &id, "builder", &path,vec!["makepkg", "-isS"]) => {
+            match build_result {
+                Ok(_) => println!("[SUCCESS] Makepkg completed successfully without network violations."),
+                Err(e) => println!("[-] Makepkg exited with error (or was interrupted): {}", e),
+            }
+        }
+    }
 
     docker
         .remove_container(

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use pcap::{Device, Capture};
 use etherparse::PacketHeaders;
@@ -7,7 +7,7 @@ struct DnsCache {
     map: HashMap<Ipv4Addr, String>,
 }
 
-pub fn run_sniffer(container_ip: &str, device_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_sniffer(container_ip: &str, device_name: &str, allowed_domains: HashSet<String>, kill_tx: tokio::sync::mpsc::Sender<()>) -> Result<(), Box<dyn std::error::Error>> {
     let mut cache = DnsCache { map: HashMap::new() };
 
     println!("[-] Sniffer: Connecting to '{}'...", device_name);
@@ -60,6 +60,12 @@ pub fn run_sniffer(container_ip: &str, device_name: &str) -> Result<(), Box<dyn 
                                     "[NETWORK ALERT] Container connects with: {} ({}:{})",
                                     domain, dest_ip, dest_port
                                 );
+
+                                if dest_port != 53 && !allowed_domains.contains(&domain) {
+                                    println!("[!!!] HACK ATTEMPT. Connection with unauthorized domain/IP: {}", domain);
+                                    
+                                    let _ = kill_tx.send(());
+                                }
                             }
                         }
 

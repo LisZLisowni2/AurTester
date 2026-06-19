@@ -15,7 +15,7 @@ struct AurResponse {
     results: Vec<AurPackageDetails>
 }
 
-async fn get_aur_git_url(package_name: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub async fn get_aur_git_url(package_name: &str) -> Result<String, Box<dyn std::error::Error>> {
     let url = format!("https://aur.archlinux.org/rpc/?v=5&type=info&arg={}", package_name);
 
     let response: AurResponse = reqwest::get(&url)
