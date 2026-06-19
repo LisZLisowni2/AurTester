@@ -26,6 +26,7 @@ pub struct Cli {
     // #[arg(short, long, default_value_t = false)]
     // kill_on_alert: bool,
 
+    /// Quiets the network's communicates
     #[clap(short, long, default_value_t = false)]
     quiet_network_allerts: bool,
 }
@@ -55,7 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         }
     }
 
-    println!("[-] Connecting with AUR RPC API for package {}", cli.package);
+    let tmp_dir = format!("/tmp/aur_build_{}", &cli.package);
+    println!("[-] Creating temporary directory at {}", tmp_dir);
+
+    println!("[-] Connecting with AUR RPC API for package {}", &cli.package);
     let git_url = match aur_api::get_aur_git_url(&cli.package).await {
         Ok(url) => url,
         Err(e) => {
@@ -63,9 +67,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
             std::process::exit(1);
         }
     };
-
-    let tmp_dir = format!("/tmp/aur_build_{}", cli.package);
-    println!("[-] Creating temporary directory at {}", tmp_dir);
 
     Command::new("git")
         .args(&["clone", &git_url, &tmp_dir])
