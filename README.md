@@ -1,6 +1,6 @@
 # AUR Tester
 
-`aur_tester` is a secure, reactive isolation environment and dynamic network intrusion prevention system (IPS) designed for safely compiling and testing Arch Linux (AUR) packages. 
+`AurTester` is a secure, reactive isolation environment and dynamic network intrusion prevention system (IPS) designed for safely compiling and testing Arch Linux (AUR) packages. 
 
 It automatically clones a specified package, parses its `PKGBUILD` to dynamically build a domain whitelist, spins up a hardened Arch Linux Docker container, and sniffs its outbound network traffic via `libpcap` to instantly terminate the container if any unlisted domain or direct IP connection is detected.
 
