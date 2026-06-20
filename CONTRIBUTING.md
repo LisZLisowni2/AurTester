@@ -1,4 +1,4 @@
-# Contributing to AUR Tester 🤝
+# Contributing to AUR Tester
 
 Thank you for your interest in improving the AUR Tester! We welcome contributions from the community, whether you are fixing bugs, improving documentation, or proposing new security features.
 
