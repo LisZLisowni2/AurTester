@@ -9,10 +9,12 @@ use bollard::Docker;
 use futures_util::{StreamExt, TryStreamExt};
 use is_root::is_root;
 use clap::Parser;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(author = "LisZLisowni", version = "0.1.0", about = "A shelter for AUR packages", long_about = None)]
-pub struct Cli {
+struct Cli {
     /// Name for AUR package
     package: String,
 
@@ -70,7 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         .args(&["clone", &git_url, &tmp_dir])
         .output()?;
     
-    let mut allowed_domains = HashSet::new();
+    let mut allowed_domains: HashSet<String> = HashSet::new();
+    let mut suspicious_domains: HashSet<String> = HashSet::new();
 
     allowed_domains.insert("aur.archlinux.org".to_string());
     allowed_domains.insert("archlinux.org".to_string());
@@ -142,40 +145,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         panic!("[-] Container ip address is empty.");
     }
     println!("[+] Container ip address: {}", container_ip);
-    let (kill_tx, mut kill_rx) = tokio::sync::mpsc::channel::<String>(100);
+    let (signal_tx, mut signal_rx) = tokio::sync::mpsc::channel::<String>(100);
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_flag_clone = stop_flag.clone();
 
     let sniffer_handler = tokio::task::spawn_blocking(move || {
-        if let Err(e) = sniffer::run_sniffer(&container_ip, &cli.interface, allowed_domains, kill_tx, &cli.quiet_network_allerts) {
+        if let Err(e) = sniffer::run_sniffer(&container_ip, &cli.interface, allowed_domains, &cli.quiet_network_allerts, signal_tx, stop_flag_clone) {
             eprintln!("[-] Sniffer error: {}", e);
         }
     });
 
     println!("[+] Sniffer started.");
 
-    tokio::select! {
-        _ = kill_rx.recv() => {
-            println!("[!!!] Kill container order received.");
+    let build_fut = command::run_command_in_container(
+        &docker,
+        &id,
+        "builder",
+        &path,
+        vec!["makepkg", "-is", "--noconfirm"],
+    );
+    tokio::pin!(build_fut);
 
-            docker
-                .remove_container(
-                    &id,
-                    Some(
-                        bollard::query_parameters::RemoveContainerOptionsBuilder::default()
-                            .force(true)
-                            .build(),
-                    ),
-                )
-                .await?;
-
-            std::process::exit(1);
-        }
-
-        build_result = command::run_command_in_container(&docker, &id, "builder", &path,vec!["makepkg", "-is", "--noconfirm"]) => {
-            match build_result {
-                Ok(_) => println!("[SUCCESS] Makepkg completed successfully without network violations."),
-                Err(e) => println!("[-] Makepkg exited with error (or was interrupted): {}", e),
+    let build_result = loop {
+        tokio::select! {
+            message = signal_rx.recv() => {
+                match message {
+                    Some(domain) => {
+                        if !cli.quiet_network_allerts { println!("[-] Signal received") };
+                        suspicious_domains.insert(domain);
+                    }
+                    None => {
+                        // channel closed, stop listening for signals but keep building
+                        // (optional: just `continue` won't work here since recv() would
+                        // immediately resolve again; consider a no-op future like
+                        // futures::future::pending() in that case if needed)
+                    }
+                }
+            }
+            result = &mut build_fut => {
+                break result;
             }
         }
+    };
+
+    match build_result {
+        Ok(_) => println!("[SUCCESS] Makepkg completed successfully"),
+        Err(e) => println!("[-] Makepkg exited with error (or was interrupted): {}", e),
     }
 
     docker
@@ -190,7 +206,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
         .await?;
 
     println!("[+] Container removed.");
-    sniffer_handler.abort();
+
+    stop_flag.store(true, Ordering::Relaxed);
+    sniffer_handler.await?;
     println!("[+] Sniffer stopped.");
+
+    println!("[-] Suspicious domains:");
+    for domain in suspicious_domains {
+        println!("  -> {}", domain);
+    }
+
     Ok(())
 }

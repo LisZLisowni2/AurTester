@@ -5,6 +5,8 @@ mod integration_tests {
     use bollard::config::ContainerCreateBody;
     use futures_util::TryStreamExt;
     use aur_tester::{command, sniffer};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     async fn create_test_image(docker: &bollard::Docker, image: &str) -> Option<String> {
         docker.create_image(
@@ -52,6 +54,7 @@ mod integration_tests {
         const IMAGE: &str = "liszlisowni/test-archlinux:latest";
         
         let mut allowed_domains = HashSet::new();
+        let mut suspicious_domains = HashSet::new();
 
         allowed_domains.insert("aur.archlinux.org".to_string());
         allowed_domains.insert("archlinux.org".to_string());
@@ -62,7 +65,7 @@ mod integration_tests {
         allowed_domains.insert("bitbucket.org".to_string());
         allowed_domains.insert("codeberg.org".to_string());
 
-        let (kill_tx, mut kill_rx) = mpsc::channel::<String>(100);
+        let (signal_tx, mut signal_rx) = mpsc::channel::<String>(100);
 
         let interface = "docker0";
 
@@ -98,23 +101,46 @@ prepare() {
         let container_ip = inspect.network_settings.unwrap().networks.unwrap().get("bridge").unwrap().ip_address.clone().unwrap();
         let is_quiet = false;
 
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_flag_clone = stop_flag.clone();
+
         let ip_clone = container_ip.clone();
         let sniffer_handle = tokio::task::spawn_blocking(move || {
-            sniffer::run_sniffer(&ip_clone, interface, allowed_domains, kill_tx, &is_quiet).unwrap();
+            sniffer::run_sniffer(&ip_clone, interface, allowed_domains, &is_quiet, signal_tx, stop_flag_clone).unwrap();
         });
 
-        let test_result = tokio::select! {
-            Some(_) = kill_rx.recv() => {
-                true
-            }
-            _ = command::run_command_in_container(&docker, &id, "builder", "/home/builder/aur_fake", vec!["makepkg", "-is", "--noconfirm"]) => {
-                false
+        let build_fut = command::run_command_in_container(&docker, &id, "builder", "/home/builder/aur_fake", vec!["makepkg", "-is", "--noconfirm"]);
+
+        tokio::pin!(build_fut);
+
+        let build_result = loop {
+            tokio::select! {
+                message = signal_rx.recv() => {
+                    match message {
+                        Some(domain) => {
+                            if !is_quiet { println!("[-] Signal received") };
+                            suspicious_domains.insert(domain);
+                        }
+                        None => {
+
+                        }
+                    }
+                }
+                result = &mut build_fut => {
+                    break result;
+                }
             }
         };
 
-        let _ = docker.remove_container(&id, Some(bollard::query_parameters::RemoveContainerOptions { force: true, ..Default::default() })).await;
-        sniffer_handle.abort();
+        match build_result {
+            Ok(_) => println!("[SUCCESS] Makepkg completed successfully."),
+            Err(e) => println!("[-] Makepkg exited with error (or was interrupted): {}", e),
+        }
 
-        assert!(test_result, "Sniffer doesn't detect connection to wikipedia.org!");
+        let _ = docker.remove_container(&id, Some(bollard::query_parameters::RemoveContainerOptions { force: true, ..Default::default() })).await;
+        stop_flag.store(true, Ordering::Relaxed);
+        sniffer_handle.await.unwrap();
+
+        assert!(suspicious_domains.contains("dyna.wikimedia.org"), "Sniffer doesn't detect connection to wikipedia.org!");
     }
 }
